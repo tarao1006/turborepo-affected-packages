@@ -1,0 +1,20 @@
+name: turborepo affected packages
+description: turborepo affected packages
+inputs:
+  turbo-config-file:
+    description: "Turbo configuration file"
+    required: false
+
+outputs:
+  affected-packages:
+    description: "Affected package names."
+  tasks:
+    description: "Tasks to run."
+
+branding:
+  icon: git-pull-request
+  color: blue
+
+runs:
+  using: node20
+  main: "./dist/index.js"
