@@ -7,15 +7,6 @@ import * as jsyaml from "js-yaml";
 import * as R from "remeda";
 import semver from "semver";
 
-const runGroup = async <T>(title: string, fn: () => Promise<T>): Promise<T> => {
-  core.startGroup(title);
-  try {
-    return fn();
-  } finally {
-    core.endGroup();
-  }
-};
-
 const lsAffectedOutput = type({
   packages: {
     items: type({
@@ -42,7 +33,7 @@ const turboConfig = type({
   },
 });
 
-const getInput = (): string[] => {
+const getTurboTasks = (): string[] => {
   const turboConfigFile = core.getInput("turbo-config-file") || "turbo.json";
 
   try {
@@ -52,6 +43,24 @@ const getInput = (): string[] => {
     return Object.keys(tasks);
   } catch {
     throw new Error(`Failed to read turbo config file: ${turboConfigFile}`);
+  }
+};
+
+const packagesOrTasksYamlConfig = type({
+  "[string]": "string[]",
+});
+
+const getPackagesOrTasksYamlConfig = (): Record<string, string[]> | null => {
+  const yamlInput = core.getInput("packages-or-tasks-yaml");
+  if (!yamlInput.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = jsyaml.load(yamlInput);
+    return packagesOrTasksYamlConfig.assert(parsed);
+  } catch (error) {
+    throw new Error(`Failed to parse packages-or-tasks-yaml: ${error}`);
   }
 };
 
@@ -75,51 +84,64 @@ const installTurborepo = async (): Promise<void> => {
   }
 };
 
+const getAffectedPackages = async (): Promise<string[]> => {
+  const { stdout } = await getExecOutput("turbo ls --affected --output json");
+  return lsAffectedOutput
+    .assert(JSON.parse(stdout))
+    .packages.items.map(({ name }) => name);
+};
+
+const getTaskPackages = async (task: string): Promise<{
+  task: string;
+  packages: string[];
+}> => {
+  const { stdout } = await getExecOutput(
+    `turbo query "query { packages(filter: { has: { field: TASK_NAME, value: \\"${task}\\" } }) {items { name path } } }"`,
+  );
+
+  return {
+    task,
+    packages: queryPackagesOutput
+      .assert(JSON.parse(stdout))
+      .data.packages.items.filter((item) => item.name !== "//")
+      .map((item) => item.name),
+  };
+};
+
 const run = async (): Promise<void> => {
+  const tasks = getTurboTasks();
+  const yamlConfig = getPackagesOrTasksYamlConfig();
+
   await installTurborepo();
 
-  const tasks = getInput();
-
-  const affectedPackages = await runGroup("Get affected packages", async () => {
-    const { stdout } = await getExecOutput("turbo ls --affected --output json");
-    return lsAffectedOutput
-      .assert(JSON.parse(stdout))
-      .packages.items.map(({ name }) => name);
-  });
+  const affectedPackages = await getAffectedPackages();
+  core.info(`affected-packages: ${JSON.stringify(affectedPackages, null, 2)}`);
   core.setOutput("affected-packages", JSON.stringify(affectedPackages));
 
-  const outputs = await runGroup("List packages for each task", async () => {
-    return Promise.all(
-      tasks.map((task) =>
-        getExecOutput(
-          `turbo query "query { packages(filter: { has: { field: TASK_NAME, value: \\"${task}\\" } }) {items { name path } } }"`,
-        ).then((output) => {
-          return {
-            task,
-            packages: queryPackagesOutput
-              .assert(JSON.parse(output.stdout))
-              .data.packages.items.filter((item) => item.name !== "//")
-              .map((item) => item.name),
-          };
-        }),
-      ),
+  const affectedTasks = (await Promise.all(
+    tasks.map((task) => getTaskPackages(task)),
+  )).filter(({ packages }) =>
+    R.intersection(affectedPackages, packages).length > 0
+  ).map(({ task }) => task);
+  core.info(`affected-tasks: ${JSON.stringify(affectedTasks, null, 2)}`);
+  core.setOutput("affected-tasks", JSON.stringify(affectedTasks));
+
+  for (const task of tasks) {
+    core.setOutput(
+      `${task}_affected`,
+      affectedTasks.includes(task) ? "true" : "false",
     );
-  });
+  }
 
-  await runGroup("Set outputs", async () => {
-    const res: Record<string, "true" | "false"> = {};
-    for (const { task, packages } of outputs) {
-      const taskName = task.replaceAll(":", "-");
-      const changed =
-        R.intersection(affectedPackages, packages).length > 0
-          ? "true"
-          : "false";
-
-      core.setOutput(taskName, changed);
-      res[taskName] = changed;
+  if (yamlConfig !== null) {
+    const affectedPackagesOrTasks = [...affectedPackages, ...affectedTasks];
+    for (const [key, dependencies] of Object.entries(yamlConfig)) {
+      const affected =
+        R.intersection(affectedPackagesOrTasks, dependencies).length > 0;
+      core.setOutput(`${key}_affected`, affected ? "true" : "false");
+      core.info(`${key}_affected: ${affected ? "true" : "false"}`);
     }
-    core.setOutput("tasks", res);
-  });
+  }
 };
 
 run();

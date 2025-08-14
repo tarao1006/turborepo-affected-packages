@@ -1,6 +1,6 @@
 {
   "name": "turborepo-affected-packages",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "build": "ncc build src/index.ts"

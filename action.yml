@@ -4,12 +4,15 @@ inputs:
   turbo-config-file:
     description: "Turbo configuration file"
     required: false
+  packages-or-tasks-yaml:
+    description: "YAML configuration for packages or tasks dependencies"
+    required: false
 
 outputs:
   affected-packages:
     description: "Affected package names."
-  tasks:
-    description: "Tasks to run."
+  affected-tasks:
+    description: "Affected task names."
 
 branding:
   icon: git-pull-request
